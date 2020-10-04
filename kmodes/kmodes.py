@@ -18,7 +18,7 @@ from .util import get_max_value_key, encode_features, get_unique_rows, \
 from .util.dissim import matching_dissim, ng_dissim
 
 
-def init_huang(X, n_clusters, dissim, random_state):
+def init_huang(X, n_clusters, dissim, random_state, weights=None):
     """Initialize centroids according to method by Huang [1997]."""
     n_attrs = X.shape[1]
     centroids = np.empty((n_clusters, n_attrs), dtype='object')
@@ -38,7 +38,7 @@ def init_huang(X, n_clusters, dissim, random_state):
     # The previously chosen centroids could result in empty clusters,
     # so set centroid to closest point in X.
     for ik in range(n_clusters):
-        ndx = np.argsort(dissim(X, centroids[ik]))
+        ndx = np.argsort(dissim(X, centroids[ik], weights))
         # We want the centroid to be unique, if possible.
         while np.all(X[ndx[0]] == centroids, axis=1).any() and ndx.shape[0] > 1:
             ndx = np.delete(ndx, 0)
@@ -47,7 +47,7 @@ def init_huang(X, n_clusters, dissim, random_state):
     return centroids
 
 
-def init_cao(X, n_clusters, dissim):
+def init_cao(X, n_clusters, dissim, weights=None):
     """Initialize centroids according to method by Cao et al. [2009].
 
     Note: O(N * attr * n_clusters**2), so watch out with large n_clusters
@@ -71,7 +71,7 @@ def init_cao(X, n_clusters, dissim):
         for ik in range(1, n_clusters):
             dd = np.empty((ik, n_points))
             for ikk in range(ik):
-                dd[ikk] = dissim(X, centroids[ikk]) * dens
+                dd[ikk] = dissim(X, centroids[ikk], weights) * dens
             centroids[ik] = X[np.argmax(np.min(dd, axis=0))]
 
     return centroids
@@ -109,7 +109,7 @@ def move_point_cat(point, ipoint, to_clust, from_clust, cl_attr_freq,
     return cl_attr_freq, membship, centroids
 
 
-def _labels_cost(X, centroids, dissim, membship=None):
+def _labels_cost(X, centroids, dissim, membship=None, weights=None):
     """Calculate labels and cost function given a matrix of points and
     a list of centroids for the k-modes algorithm.
     """
@@ -120,7 +120,7 @@ def _labels_cost(X, centroids, dissim, membship=None):
     cost = 0.
     labels = np.empty(n_points, dtype=np.uint16)
     for ipoint, curpoint in enumerate(X):
-        diss = dissim(centroids, curpoint, X=X, membship=membship)
+        diss = dissim(centroids, curpoint, weights, X=X, membship=membship)
         clust = np.argmin(diss)
         labels[ipoint] = clust
         cost += diss[clust]
@@ -128,11 +128,11 @@ def _labels_cost(X, centroids, dissim, membship=None):
     return labels, cost
 
 
-def _k_modes_iter(X, centroids, cl_attr_freq, membship, dissim, random_state):
+def _k_modes_iter(X, centroids, cl_attr_freq, membship, dissim, random_state, weights=None):
     """Single iteration of k-modes clustering algorithm"""
     moves = 0
     for ipoint, curpoint in enumerate(X):
-        clust = np.argmin(dissim(centroids, curpoint, X=X, membship=membship))
+        clust = np.argmin(dissim(centroids, curpoint, weights, X=X, membship=membship))
         if membship[clust, ipoint]:
             # Point is already in its right place.
             continue
@@ -160,15 +160,15 @@ def _k_modes_iter(X, centroids, cl_attr_freq, membship, dissim, random_state):
 
 
 def k_modes_single(X, n_clusters, n_points, n_attrs, max_iter, dissim, init, init_no,
-                   verbose, random_state):
+                   verbose, random_state, weights):
     random_state = check_random_state(random_state)
     # _____ INIT _____
     if verbose:
         print("Init: initializing centroids")
     if isinstance(init, str) and init.lower() == 'huang':
-        centroids = init_huang(X, n_clusters, dissim, random_state)
+        centroids = init_huang(X, n_clusters, dissim, random_state, weights)
     elif isinstance(init, str) and init.lower() == 'cao':
-        centroids = init_cao(X, n_clusters, dissim)
+        centroids = init_cao(X, n_clusters, dissim, weights)
     elif isinstance(init, str) and init.lower() == 'random':
         seeds = random_state.choice(range(n_points), n_clusters)
         centroids = X[seeds]
@@ -195,7 +195,7 @@ def k_modes_single(X, n_clusters, n_points, n_attrs, max_iter, dissim, init, ini
                     for _ in range(n_clusters)]
     for ipoint, curpoint in enumerate(X):
         # Initial assignment to clusters
-        clust = np.argmin(dissim(centroids, curpoint, X=X, membship=membship))
+        clust = np.argmin(dissim(centroids, curpoint, weights, X=X, membship=membship))
         membship[clust, ipoint] = 1
         # Count attribute values per cluster.
         for iattr, curattr in enumerate(curpoint):
@@ -216,7 +216,7 @@ def k_modes_single(X, n_clusters, n_points, n_attrs, max_iter, dissim, init, ini
     labels = None
     converged = False
 
-    _, cost = _labels_cost(X, centroids, dissim, membship)
+    _, cost = _labels_cost(X, centroids, dissim, membship, weights)
 
     epoch_costs = [cost]
     while itr <= max_iter and not converged:
@@ -227,10 +227,11 @@ def k_modes_single(X, n_clusters, n_points, n_attrs, max_iter, dissim, init, ini
             cl_attr_freq,
             membship,
             dissim,
-            random_state
+            random_state,
+            weights
         )
         # All points seen in this iteration
-        labels, ncost = _labels_cost(X, centroids, dissim, membship)
+        labels, ncost = _labels_cost(X, centroids, dissim, membship, weights)
         converged = (moves == 0) or (ncost >= cost)
         epoch_costs.append(ncost)
         cost = ncost
@@ -241,7 +242,7 @@ def k_modes_single(X, n_clusters, n_points, n_attrs, max_iter, dissim, init, ini
     return centroids, labels, cost, itr, epoch_costs
 
 
-def k_modes(X, n_clusters, max_iter, dissim, init, n_init, verbose, random_state, n_jobs):
+def k_modes(X, n_clusters, max_iter, dissim, init, n_init, verbose, random_state, n_jobs, weights):
     """k-modes algorithm"""
     random_state = check_random_state(random_state)
     if sparse.issparse(X):
@@ -272,11 +273,11 @@ def k_modes(X, n_clusters, max_iter, dissim, init, n_init, verbose, random_state
     if n_jobs == 1:
         for init_no in range(n_init):
             results.append(k_modes_single(X, n_clusters, n_points, n_attrs, max_iter,
-                                          dissim, init, init_no, verbose, seeds[init_no]))
+                                          dissim, init, init_no, verbose, seeds[init_no], weights))
     else:
         results = Parallel(n_jobs=n_jobs, verbose=0)(
             delayed(k_modes_single)(X, n_clusters, n_points, n_attrs, max_iter,
-                                    dissim, init, init_no, verbose, seed)
+                                    dissim, init, init_no, verbose, seed, weights)
             for init_no, seed in enumerate(seeds))
     all_centroids, all_labels, all_costs, all_n_iters, all_epoch_costs = zip(*results)
 
@@ -365,7 +366,7 @@ class KModes(BaseEstimator, ClusterMixin):
     """
 
     def __init__(self, n_clusters=8, max_iter=100, cat_dissim=matching_dissim,
-                 init='Cao', n_init=1, verbose=0, random_state=None, n_jobs=1):
+                 init='Cao', n_init=1, verbose=0, random_state=None, n_jobs=1, weights=None):
 
         self.n_clusters = n_clusters
         self.max_iter = max_iter
@@ -375,6 +376,7 @@ class KModes(BaseEstimator, ClusterMixin):
         self.verbose = verbose
         self.random_state = random_state
         self.n_jobs = n_jobs
+        self.weights = weights
         if ((isinstance(self.init, str) and self.init == 'Cao') or
                 hasattr(self.init, '__array__')) and self.n_init > 1:
             if self.verbose:
@@ -403,6 +405,7 @@ class KModes(BaseEstimator, ClusterMixin):
             self.verbose,
             random_state,
             self.n_jobs,
+            self.weights
         )
         return self
 

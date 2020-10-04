@@ -5,9 +5,13 @@ Dissimilarity measures for clustering
 import numpy as np
 
 
-def matching_dissim(a, b, **_):
+def matching_dissim(a, b, weights=None, **_):
     """Simple matching dissimilarity function"""
-    return np.sum(a != b, axis=1)
+    if weights is None:
+        return np.sum(a != b, axis=1)
+
+    binary_diff = (a != b).astype(int)
+    return weights.dot(binary_diff.T)[0]
 
 
 def jaccard_dissim_binary(a, b, **__):
